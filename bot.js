@@ -2,6 +2,7 @@ const { Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, Butto
 const moment = require('moment');
 const fs = require('fs').promises;
 const path = require('path');
+const { execSync } = require('child_process');
 require('dotenv').config();
 
 // Create a new client instance
@@ -21,6 +22,9 @@ const activeGames = new Map();
 const ELO_FILE = path.join(__dirname, 'elo_ratings.json');
 const DEFAULT_ELO = 1500;
 const K_FACTOR = 32; // Standard chess K-factor
+
+// Changelog tracking
+const LAST_COMMIT_FILE = path.join(__dirname, '.last_commit');
 
 // Load ELO ratings from file
 async function loadELORatings() {
@@ -91,6 +95,105 @@ async function updateELO(player1Id, player2Id, player1Score, player2Score) {
         player1: { old: player1Rating, new: player1New, change: player1New - player1Rating },
         player2: { old: player2Rating, new: player2New, change: player2New - player2Rating }
     };
+}
+
+// Get last known commit hash
+async function getLastCommit() {
+    try {
+        const data = await fs.readFile(LAST_COMMIT_FILE, 'utf8');
+        return data.trim();
+    } catch (error) {
+        return null;
+    }
+}
+
+// Save last known commit hash
+async function saveLastCommit(commitHash) {
+    await fs.writeFile(LAST_COMMIT_FILE, commitHash, 'utf8');
+}
+
+// Get current commit hash
+function getCurrentCommit() {
+    try {
+        return execSync('git rev-parse HEAD', { encoding: 'utf8', cwd: __dirname }).trim();
+    } catch (error) {
+        return null;
+    }
+}
+
+// Get git log since a commit
+function getGitLogSince(lastCommit) {
+    try {
+        if (!lastCommit) {
+            // Get last 5 commits if no last commit
+            return execSync('git log --oneline -5', { encoding: 'utf8', cwd: __dirname }).trim();
+        }
+        return execSync(`git log --oneline ${lastCommit}..HEAD`, { encoding: 'utf8', cwd: __dirname }).trim();
+    } catch (error) {
+        return null;
+    }
+}
+
+// Summarize git commits
+function summarizeCommits(logText) {
+    if (!logText || logText.trim() === '') return null;
+    
+    const commits = logText.split('\n').filter(line => line.trim());
+    if (commits.length === 0) return null;
+    
+    const summary = [];
+    summary.push(`**${commits.length} new commit${commits.length > 1 ? 's' : ''} detected:**\n`);
+    
+    commits.forEach((commit, index) => {
+        const [hash, ...messageParts] = commit.split(' ');
+        const message = messageParts.join(' ');
+        summary.push(`• ${message}`);
+    });
+    
+    return summary.join('\n');
+}
+
+// Post changelog to Discord
+async function postChangelog(client) {
+    const changelogChannelId = process.env.CHANGELOG_CHANNEL_ID;
+    
+    if (!changelogChannelId) {
+        console.log('No CHANGELOG_CHANNEL_ID set, skipping changelog post');
+        return;
+    }
+    
+    try {
+        const lastCommit = await getLastCommit();
+        const currentCommit = getCurrentCommit();
+        
+        if (!currentCommit) {
+            console.log('Could not get current commit, skipping changelog');
+            return;
+        }
+        
+        // If no last commit or commits are different
+        if (!lastCommit || lastCommit !== currentCommit) {
+            const logText = getGitLogSince(lastCommit);
+            const summary = summarizeCommits(logText);
+            
+            if (summary) {
+                const channel = await client.channels.fetch(changelogChannelId);
+                const embed = new EmbedBuilder()
+                    .setTitle('🔄 Bot Updated')
+                    .setColor(0x00FF00)
+                    .setDescription(summary)
+                    .setTimestamp();
+                
+                await channel.send({ embeds: [embed] });
+                console.log('Posted changelog to Discord');
+            }
+            
+            // Save current commit
+            await saveLastCommit(currentCommit);
+        }
+    } catch (error) {
+        console.error('Error posting changelog:', error);
+    }
 }
 
 // Helper function to validate chess game time
@@ -210,8 +313,11 @@ function createGameEmbed(game, status = 'proposed') {
 }
 
 // When the client is ready, run this code (only once)
-client.once(Events.ClientReady, readyClient => {
+client.once(Events.ClientReady, async readyClient => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
+    
+    // Post changelog if there are updates
+    await postChangelog(readyClient);
 });
 
 // Listen for messages

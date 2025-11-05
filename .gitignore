@@ -74,3 +74,6 @@ logs
 
 # ELO ratings data
 elo_ratings.json
+
+# Changelog tracking
+.last_commit

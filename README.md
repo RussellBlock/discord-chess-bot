@@ -58,7 +58,53 @@ Simply mention "chess" and "play" or "game" in your message along with a date an
    npm start
    ```
 
-### Deploy to Railway
+### Deploy to Raspberry Pi
+
+1. Make sure SSH is enabled on your Raspberry Pi and you can connect to it:
+   ```bash
+   ssh pi@raspberrypi.local
+   ```
+   (Replace `pi` and `raspberrypi.local` with your actual username and hostname/IP)
+
+2. Run the deployment script from your local machine:
+   ```bash
+   ./deploy.sh [pi_hostname] [pi_username]
+   ```
+   Example:
+   ```bash
+   ./deploy.sh raspberrypi.local pi
+   ```
+   Or if using IP address:
+   ```bash
+   ./deploy.sh 192.168.1.100 pi
+   ```
+
+3. SSH into your Pi and run the setup script:
+   ```bash
+   ssh pi@raspberrypi.local
+   cd ~/discord-bot
+   chmod +x setup-pi.sh
+   ./setup-pi.sh
+   ```
+
+4. Create `.env` file on the Pi with your Discord token:
+   ```bash
+   nano .env
+   ```
+   Add:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token_here
+   ```
+
+5. The bot will now run automatically on boot and restart if it crashes!
+
+**Useful PM2 Commands:**
+- `pm2 status` - Check bot status
+- `pm2 logs discord-bot` - View bot logs
+- `pm2 restart discord-bot` - Restart bot
+- `pm2 stop discord-bot` - Stop bot
+
+### Deploy to Railway (Alternative)
 
 1. Push this repository to GitHub
 2. Go to [Railway](https://railway.app)
@@ -73,6 +119,13 @@ Simply mention "chess" and "play" or "game" in your message along with a date an
 ## Environment Variables
 
 - `DISCORD_TOKEN` - Your Discord bot token (required)
+- `CHANGELOG_CHANNEL_ID` - Discord channel ID for automatic changelog posts (optional)
+
+**Setting up Changelog Channel:**
+1. Right-click the Discord channel where you want changelog posts
+2. Click "Copy ID" (enable Developer Mode in Discord settings first)
+3. Add to your `.env` file: `CHANGELOG_CHANNEL_ID=your_channel_id_here`
+4. The bot will automatically post a summary of new commits when it restarts
 
 ## Dependencies
 
