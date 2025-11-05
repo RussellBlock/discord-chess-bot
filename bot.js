@@ -137,7 +137,7 @@ client.once(Events.ClientReady, readyClient => {
 });
 
 // Listen for messages
-client.on(Events.MessageCreate, message => {
+client.on(Events.MessageCreate, async message => {
     // Ignore messages from bots
     if (message.author.bot) return;
 
@@ -176,14 +176,70 @@ client.on(Events.MessageCreate, message => {
                     inline: false
                 },
                 {
-                    name: '📝 Other Commands',
-                    value: '• `!ping` - Test if bot is working\n• `!hello` - Get a greeting\n• `!help` or `!chess-help` - Show this help',
+                    name: '📝 Commands',
+                    value: '• `!ping` - Test if bot is working\n• `!hello` - Get a greeting\n• `!cancel-game` or `!cancel-chess` - Cancel your active chess game\n• `!help` or `!chess-help` - Show this help',
                     inline: false
                 }
             )
             .setTimestamp();
         
         message.reply({ embeds: [helpEmbed] });
+        return;
+    }
+
+    // Cancel game command
+    if (message.content === '!cancel-game' || message.content === '!cancel-chess') {
+        let foundGame = null;
+        let foundGameId = null;
+        
+        // Find user's active game
+        for (const [gameId, game] of activeGames) {
+            if (game.player1 === message.author.id || game.player2 === message.author.id) {
+                foundGame = game;
+                foundGameId = gameId;
+                break;
+            }
+        }
+        
+        if (!foundGame) {
+            message.reply('❌ You don\'t have any active chess games to cancel.');
+            return;
+        }
+        
+        // Notify both players if game was confirmed
+        if (foundGame.player2) {
+            const player1 = await client.users.fetch(foundGame.player1);
+            const player2 = await client.users.fetch(foundGame.player2);
+            
+            try {
+                await player1.send(`❌ Your chess game scheduled for ${moment(foundGame.dateTime).format('dddd, MMMM Do YYYY, h:mm A')} has been cancelled by ${message.author.username}.`);
+                await player2.send(`❌ Your chess game scheduled for ${moment(foundGame.dateTime).format('dddd, MMMM Do YYYY, h:mm A')} has been cancelled by ${message.author.username}.`);
+            } catch (error) {
+                console.error('Error sending DM:', error);
+            }
+        }
+        
+        // Try to update the original message if it still exists
+        try {
+            const channel = await client.channels.fetch(foundGame.channelId);
+            if (foundGame.messageId) {
+                const gameMessage = await channel.messages.fetch(foundGame.messageId);
+                const embed = new EmbedBuilder()
+                    .setTitle('♟️ Chess Game Cancelled')
+                    .setColor(0xFF0000)
+                    .setDescription('This chess game has been cancelled.')
+                    .setTimestamp();
+                await gameMessage.edit({ embeds: [embed], components: [] });
+            }
+        } catch (error) {
+            // Message might have been deleted, that's okay
+            console.log('Original game message not found (may have been deleted)');
+        }
+        
+        // Remove game from active games
+        activeGames.delete(foundGameId);
+        
+        message.reply('✅ Your chess game has been cancelled.');
         return;
     }
 
