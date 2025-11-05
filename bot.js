@@ -1,5 +1,7 @@
 const { Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const moment = require('moment');
+const fs = require('fs').promises;
+const path = require('path');
 require('dotenv').config();
 
 // Create a new client instance
@@ -14,6 +16,82 @@ const client = new Client({
 
 // Store active chess games
 const activeGames = new Map();
+
+// ELO storage file path
+const ELO_FILE = path.join(__dirname, 'elo_ratings.json');
+const DEFAULT_ELO = 1500;
+const K_FACTOR = 32; // Standard chess K-factor
+
+// Load ELO ratings from file
+async function loadELORatings() {
+    try {
+        const data = await fs.readFile(ELO_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        // File doesn't exist, return empty object
+        return {};
+    }
+}
+
+// Save ELO ratings to file
+async function saveELORatings(ratings) {
+    await fs.writeFile(ELO_FILE, JSON.stringify(ratings, null, 2), 'utf8');
+}
+
+// Get player's ELO rating
+async function getELO(playerId) {
+    const ratings = await loadELORatings();
+    return ratings[playerId] || DEFAULT_ELO;
+}
+
+// Calculate rank based on ELO
+function calculateRank(elo) {
+    if (elo >= 2000) return 'Grandmaster';
+    if (elo >= 1800) return 'Master';
+    if (elo >= 1600) return 'Expert';
+    if (elo >= 1400) return 'Advanced';
+    if (elo >= 1200) return 'Intermediate';
+    return 'Beginner';
+}
+
+// Calculate expected score (probability of winning)
+function calculateExpectedScore(playerRating, opponentRating) {
+    return 1 / (1 + Math.pow(10, (opponentRating - playerRating) / 400));
+}
+
+// Calculate new ELO rating
+function calculateNewRating(oldRating, expectedScore, actualScore) {
+    return Math.round(oldRating + K_FACTOR * (actualScore - expectedScore));
+}
+
+// Update ELO ratings after a game
+async function updateELO(player1Id, player2Id, player1Score, player2Score) {
+    const ratings = await loadELORatings();
+    
+    // Get current ratings
+    const player1Rating = ratings[player1Id] || DEFAULT_ELO;
+    const player2Rating = ratings[player2Id] || DEFAULT_ELO;
+    
+    // Calculate expected scores
+    const player1Expected = calculateExpectedScore(player1Rating, player2Rating);
+    const player2Expected = calculateExpectedScore(player2Rating, player1Rating);
+    
+    // Calculate new ratings
+    const player1New = calculateNewRating(player1Rating, player1Expected, player1Score);
+    const player2New = calculateNewRating(player2Rating, player2Expected, player2Score);
+    
+    // Update ratings
+    ratings[player1Id] = player1New;
+    ratings[player2Id] = player2New;
+    
+    // Save to file
+    await saveELORatings(ratings);
+    
+    return {
+        player1: { old: player1Rating, new: player1New, change: player1New - player1Rating },
+        player2: { old: player2Rating, new: player2New, change: player2New - player2Rating }
+    };
+}
 
 // Helper function to validate chess game time
 function isValidChessTime(dateTime) {
@@ -177,7 +255,7 @@ client.on(Events.MessageCreate, async message => {
                 },
                 {
                     name: '📝 Commands',
-                    value: '• `!ping` - Test if bot is working\n• `!hello` - Get a greeting\n• `!cancel-game` or `!cancel-chess` - Cancel your active chess game\n• `!help` or `!chess-help` - Show this help',
+                    value: '• `!ping` - Test if bot is working\n• `!hello` - Get a greeting\n• `!cancel-game` or `!cancel-chess` - Cancel your active chess game\n• `!report-result <opponent> <win/loss/draw>` - Report game result\n• `!elo [player]` - View ELO rating\n• `!leaderboard` - View top players\n• `!help` or `!chess-help` - Show this help',
                     inline: false
                 }
             )
@@ -240,6 +318,139 @@ client.on(Events.MessageCreate, async message => {
         activeGames.delete(foundGameId);
         
         message.reply('✅ Your chess game has been cancelled.');
+        return;
+    }
+
+    // Report result command
+    if (message.content.startsWith('!report-result') || message.content.startsWith('!report')) {
+        const args = message.content.split(/\s+/);
+        
+        if (args.length < 3) {
+            message.reply('❌ Usage: `!report-result <@opponent> <win/loss/draw>`\n\n**Examples:**\n• `!report-result @player win`\n• `!report-result @player loss`\n• `!report-result @player draw`');
+            return;
+        }
+        
+        // Extract opponent mention
+        const opponentMatch = message.mentions.users.first();
+        if (!opponentMatch) {
+            message.reply('❌ Please mention your opponent. Example: `!report-result @player win`');
+            return;
+        }
+        
+        if (opponentMatch.id === message.author.id) {
+            message.reply('❌ You cannot report a result against yourself!');
+            return;
+        }
+        
+        // Parse result
+        const result = args[args.length - 1].toLowerCase();
+        let player1Score, player2Score;
+        
+        if (result === 'win' || result === 'w') {
+            player1Score = 1;
+            player2Score = 0;
+        } else if (result === 'loss' || result === 'l' || result === 'lose') {
+            player1Score = 0;
+            player2Score = 1;
+        } else if (result === 'draw' || result === 'd' || result === 'tie') {
+            player1Score = 0.5;
+            player2Score = 0.5;
+        } else {
+            message.reply('❌ Invalid result! Use `win`, `loss`, or `draw`.');
+            return;
+        }
+        
+        // Update ELO
+        const eloUpdate = await updateELO(message.author.id, opponentMatch.id, player1Score, player2Score);
+        
+        // Create result embed
+        const resultEmbed = new EmbedBuilder()
+            .setTitle('♟️ Game Result Reported')
+            .setColor(0x0099FF)
+            .addFields(
+                { name: 'Player 1', value: `<@${message.author.id}>`, inline: true },
+                { name: 'Player 2', value: `<@${opponentMatch.id}>`, inline: true },
+                { name: 'Result', value: result === 'win' || result === 'w' ? `${message.author.username} won!` : result === 'loss' || result === 'l' || result === 'lose' ? `${opponentMatch.username} won!` : 'Draw', inline: false },
+                { 
+                    name: 'ELO Changes', 
+                    value: `<@${message.author.id}>: ${eloUpdate.player1.old} → ${eloUpdate.player1.new} (${eloUpdate.player1.change >= 0 ? '+' : ''}${eloUpdate.player1.change})\n<@${opponentMatch.id}>: ${eloUpdate.player2.old} → ${eloUpdate.player2.new} (${eloUpdate.player2.change >= 0 ? '+' : ''}${eloUpdate.player2.change})`,
+                    inline: false
+                }
+            )
+            .setTimestamp();
+        
+        message.reply({ embeds: [resultEmbed] });
+        return;
+    }
+
+    // View ELO command
+    if (message.content.startsWith('!elo') || message.content.startsWith('!rating')) {
+        const args = message.content.split(/\s+/);
+        let targetUser = message.author;
+        
+        // Check if a user was mentioned
+        if (message.mentions.users.size > 0) {
+            targetUser = message.mentions.users.first();
+        } else if (args.length > 1) {
+            // Try to get user by ID if provided
+            try {
+                targetUser = await client.users.fetch(args[1]);
+            } catch (error) {
+                // Invalid user ID, use author
+            }
+        }
+        
+        const elo = await getELO(targetUser.id);
+        
+        const eloEmbed = new EmbedBuilder()
+            .setTitle(`♟️ ELO Rating: ${targetUser.username}`)
+            .setColor(0x0099FF)
+            .addFields(
+                { name: 'Rating', value: `${elo}`, inline: true },
+                { name: 'Rank', value: calculateRank(elo), inline: true }
+            )
+            .setThumbnail(targetUser.displayAvatarURL())
+            .setTimestamp();
+        
+        message.reply({ embeds: [eloEmbed] });
+        return;
+    }
+
+    // Leaderboard command
+    if (message.content === '!leaderboard' || message.content === '!lb') {
+        const ratings = await loadELORatings();
+        
+        // Convert to array and sort
+        const sortedPlayers = Object.entries(ratings)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10); // Top 10
+        
+        if (sortedPlayers.length === 0) {
+            message.reply('📊 No ratings yet! Play some games and report results to see the leaderboard.');
+            return;
+        }
+        
+        // Build leaderboard text
+        let leaderboardText = '';
+        for (let i = 0; i < sortedPlayers.length; i++) {
+            const [playerId, rating] = sortedPlayers[i];
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+            
+            try {
+                const user = await client.users.fetch(playerId);
+                leaderboardText += `${medal} <@${playerId}> - **${rating}** ELO\n`;
+            } catch (error) {
+                leaderboardText += `${medal} <@${playerId}> - **${rating}** ELO\n`;
+            }
+        }
+        
+        const leaderboardEmbed = new EmbedBuilder()
+            .setTitle('🏆 Chess Leaderboard')
+            .setColor(0xFFD700)
+            .setDescription(leaderboardText)
+            .setTimestamp();
+        
+        message.reply({ embeds: [leaderboardEmbed] });
         return;
     }
 

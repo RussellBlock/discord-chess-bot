@@ -71,3 +71,6 @@ Thumbs.db
 # Logs
 logs
 *.log
+
+# ELO ratings data
+elo_ratings.json
